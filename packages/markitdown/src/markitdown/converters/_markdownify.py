@@ -1,8 +1,11 @@
+import os
 import re
-import markdownify
-
+import urllib.request
+import warnings
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse, urlunparse
+
+import markdownify
 
 
 class _CustomMarkdownify(markdownify.MarkdownConverter):
@@ -13,11 +16,18 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
     - Removing javascript hyperlinks.
     - Truncating images with large data:uri sources.
     - Ensuring URIs are properly escaped, and do not conflict with Markdown syntax
+    - Supporting optional local image downloading and sequential renaming.
     """
 
     def __init__(self, **options: Any):
         options["heading_style"] = options.get("heading_style", markdownify.ATX)
         options["keep_data_uris"] = options.get("keep_data_uris", False)
+
+        # Options for downloading images locally
+        self.download_images: bool = options.pop("download_images", False)
+        self.output_dir: str = options.pop("output_dir", ".")
+        self.image_counter: int = 0
+
         # Explicitly cast options to the expected type if necessary
         super().__init__(**options)
 
@@ -89,7 +99,7 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
         convert_as_inline: Optional[bool] = False,
         **kwargs,
     ) -> str:
-        """Same as usual converter, but removes data URIs"""
+        """Same as usual converter, but removes data URIs and handles auto-downloading"""
 
         alt = el.attrs.get("alt", None) or ""
         src = el.attrs.get("src", None) or el.attrs.get("data-src", None) or ""
@@ -106,6 +116,38 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
         # Remove dataURIs
         if src.startswith("data:") and not self.options["keep_data_uris"]:
             src = src.split(",")[0] + "..."
+
+        # Download remote images locally and assign a sequential filename if enabled
+        if self.download_images and src.startswith(("http://", "https://")):
+            try:
+                self.image_counter += 1
+
+                parsed_path = urlparse(src).path
+                ext = os.path.splitext(parsed_path)[1] or ".png"
+
+                new_filename = f"figure-{self.image_counter:03d}{ext}"
+
+                os.makedirs(self.output_dir, exist_ok=True)
+                full_save_path = os.path.join(self.output_dir, new_filename)
+
+                req = urllib.request.Request(
+                    src,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+                    },
+                )
+                with (
+                    urllib.request.urlopen(req) as response,
+                    open(full_save_path, "wb") as out_file,
+                ):
+                    out_file.write(response.read())
+
+                src = new_filename
+            except Exception as e:
+                warnings.warn(
+                    f"Could not download image {src}: {e}",
+                    RuntimeWarning,
+                )
 
         return "![%s](%s%s)" % (alt, src, title_part)
 
