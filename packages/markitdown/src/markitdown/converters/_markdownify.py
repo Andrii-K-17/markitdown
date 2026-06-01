@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import urllib.request
@@ -6,6 +7,9 @@ from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import markdownify
+
+from .._stream_info import StreamInfo
+from ._llm_svg import llm_svg
 
 
 class _CustomMarkdownify(markdownify.MarkdownConverter):
@@ -17,6 +21,7 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
     - Truncating images with large data:uri sources.
     - Ensuring URIs are properly escaped, and do not conflict with Markdown syntax
     - Supporting optional local image downloading and sequential renaming.
+    - Converting inline <svg> elements to Mermaid diagrams via an LLM (if configured).
     """
 
     def __init__(self, **options: Any):
@@ -163,6 +168,40 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
         if el.get("type") == "checkbox":
             return "[x] " if el.has_attr("checked") else "[ ] "
         return ""
+
+    def convert_svg(
+        self,
+        el: Any,
+        text: str,
+        convert_as_inline: Optional[bool] = False,
+        **kwargs,
+    ) -> str:
+        """Convert an inline <svg> element via an LLM to a Mermaid diagram, if configured."""
+        llm_client = self.options.get("llm_client")
+        llm_model = self.options.get("llm_model")
+        svg_source = str(el)
+
+        if llm_client is not None and llm_model is not None:
+            stream = io.BytesIO(svg_source.encode("utf-8"))
+            stream_info = StreamInfo(
+                mimetype="image/svg+xml", extension=".svg", charset="utf-8"
+            )
+            try:
+                mermaid = llm_svg(
+                    stream,
+                    stream_info,
+                    client=llm_client,
+                    model=llm_model,
+                    prompt=self.options.get("llm_prompt"),
+                )
+            except Exception:
+                mermaid = None
+
+            if mermaid:
+                return f"\n\n```mermaid\n{mermaid}\n```\n\n"
+
+        # Fallback: preserve the original inline SVG source when Mermaid extraction fails
+        return f"\n\n```xml\n{svg_source.strip()}\n```\n\n"
 
     def convert_soup(self, soup: Any) -> str:
         return super().convert_soup(soup)  # type: ignore

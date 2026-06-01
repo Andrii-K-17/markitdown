@@ -531,6 +531,74 @@ def test_markitdown_llm() -> None:
     # Standard alt text is included
     validate_strings(result, PPTX_TEST_STRINGS)
 
+def test_inline_svg_converts_to_mermaid_block() -> None:
+    """An inline <svg> inside HTML is converted to a mermaid block when LLM is configured."""
+    svg_html = (
+        "<html><body>"
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+        '<circle cx="50" cy="50" r="30"/>'
+        "</svg>"
+        "</body></html>"
+    )
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="flowchart LR\n  A --> B"))]
+    )
+    markitdown = MarkItDown(llm_client=client, llm_model="gpt-4o")
+
+    result = markitdown.convert_stream(
+        io.BytesIO(svg_html.encode("utf-8")),
+        stream_info=StreamInfo(mimetype="text/html", extension=".html"),
+    )
+
+    assert "```mermaid" in result.markdown
+    assert client.chat.completions.create.called
+
+
+def test_inline_svg_fallback_to_xml_block_when_no_llm() -> None:
+    """When no LLM is configured, an inline <svg> is preserved as an xml code block."""
+    svg_html = (
+        "<html><body>"
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">'
+        '<rect width="200" height="200"/>'
+        "</svg>"
+        "</body></html>"
+    )
+
+    markitdown = MarkItDown()
+    result = markitdown.convert_stream(
+        io.BytesIO(svg_html.encode("utf-8")),
+        stream_info=StreamInfo(mimetype="text/html", extension=".html"),
+    )
+
+    assert "```xml" in result.markdown
+    assert "<svg" in result.markdown
+    assert "```mermaid" not in result.markdown
+
+
+def test_inline_svg_fallback_when_llm_returns_skip() -> None:
+    """When LLM responds with SKIP, inline <svg> falls back to an xml block."""
+    svg_html = (
+        "<html><body>"
+        '<svg xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="100" y2="100"/></svg>'
+        "</body></html>"
+    )
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="SKIP"))]
+    )
+    markitdown = MarkItDown(llm_client=client, llm_model="gpt-4o")
+
+    result = markitdown.convert_stream(
+        io.BytesIO(svg_html.encode("utf-8")),
+        stream_info=StreamInfo(mimetype="text/html", extension=".html"),
+    )
+
+    assert "```xml" in result.markdown
+    assert "```mermaid" not in result.markdown
+
 
 if __name__ == "__main__":
     """Runs this file's tests from the command line."""
@@ -547,6 +615,9 @@ if __name__ == "__main__":
         test_markitdown_exiftool,
         test_markitdown_llm_parameters,
         test_markitdown_llm,
+        test_inline_svg_converts_to_mermaid_block,
+        test_inline_svg_fallback_to_xml_block_when_no_llm,
+        test_inline_svg_fallback_when_llm_returns_skip,
     ]:
         print(f"Running {test.__name__}...", end="")
         test()
