@@ -4,7 +4,8 @@ import os
 import re
 import shutil
 import pytest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from markitdown._uri_utils import parse_data_uri, file_uri_to_path
 
@@ -531,6 +532,7 @@ def test_markitdown_llm() -> None:
     # Standard alt text is included
     validate_strings(result, PPTX_TEST_STRINGS)
 
+
 def test_inline_svg_converts_to_mermaid_block() -> None:
     """An inline <svg> inside HTML is converted to a mermaid block when LLM is configured."""
     svg_html = (
@@ -600,6 +602,59 @@ def test_inline_svg_fallback_when_llm_returns_skip() -> None:
     assert "```mermaid" not in result.markdown
 
 
+def test_download_images_saves_to_subfolder(tmp_path: Path) -> None:
+    """Images must be saved into image_folder subdir, not the output root."""
+    html = '<html><body><img src="https://example.com/test.png"/></body></html>'
+
+    mock_response = MagicMock()
+    mock_response.read.return_value = b"fake image data"
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        markitdown = MarkItDown()
+        result = markitdown.convert_stream(
+            io.BytesIO(html.encode("utf-8")),
+            stream_info=StreamInfo(mimetype="text/html", extension=".html"),
+            download_images=True,
+            output_dir=str(tmp_path),
+            image_folder="images",
+        )
+
+    # File must land in the subfolder, not in the root
+    assert (tmp_path / "images" / "figure-001.png").exists()
+    assert not (tmp_path / "figure-001.png").exists()
+    # Markdown link must use forward slashes (Windows-safe)
+    assert "images/figure-001.png" in result.markdown
+    assert "\\" not in result.markdown
+
+
+def test_download_images_rejects_dangerous_extension(tmp_path: Path) -> None:
+    """Extensions outside the whitelist must be replaced with .png."""
+    html = '<html><body><img src="https://example.com/payload.sh"/></body></html>'
+
+    mock_response = MagicMock()
+    mock_response.read.return_value = b"fake"
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        markitdown = MarkItDown()
+        result = markitdown.convert_stream(
+            io.BytesIO(html.encode("utf-8")),
+            stream_info=StreamInfo(mimetype="text/html", extension=".html"),
+            download_images=True,
+            output_dir=str(tmp_path),
+            image_folder="images",
+        )
+
+    # Must be saved as .png, not .sh
+    assert "figure-001.png" in result.markdown
+    assert ".sh" not in result.markdown
+    assert (tmp_path / "images" / "figure-001.png").exists()
+    assert not (tmp_path / "images" / "figure-001.sh").exists()
+
+
 if __name__ == "__main__":
     """Runs this file's tests from the command line."""
     for test in [
@@ -618,6 +673,8 @@ if __name__ == "__main__":
         test_inline_svg_converts_to_mermaid_block,
         test_inline_svg_fallback_to_xml_block_when_no_llm,
         test_inline_svg_fallback_when_llm_returns_skip,
+        test_download_images_saves_to_subfolder,
+        test_download_images_rejects_dangerous_extension,
     ]:
         print(f"Running {test.__name__}...", end="")
         test()
