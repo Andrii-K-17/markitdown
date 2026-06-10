@@ -31,6 +31,7 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
         # Options for downloading images locally
         self.download_images: bool = options.pop("download_images", False)
         self.output_dir: str = options.pop("output_dir", ".")
+        self.image_folder: str = options.pop("image_folder", "images")
         self.image_counter: int = 0
 
         # Explicitly cast options to the expected type if necessary
@@ -127,13 +128,33 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
             try:
                 self.image_counter += 1
 
+                # Safe extension extraction and validation
                 parsed_path = urlparse(src).path
-                ext = os.path.splitext(parsed_path)[1] or ".png"
+                ext = os.path.splitext(parsed_path)[1].lower() or ".png"
+
+                ALLOWED_EXTENSIONS = {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".webp",
+                    ".gif",
+                    ".svg",
+                    ".bmp",
+                    ".ico",
+                }
+                if ext not in ALLOWED_EXTENSIONS:
+                    ext = ".png"
 
                 new_filename = f"figure-{self.image_counter:03d}{ext}"
 
-                os.makedirs(self.output_dir, exist_ok=True)
-                full_save_path = os.path.join(self.output_dir, new_filename)
+                # Build target directory for physical save
+                target_dir = (
+                    os.path.join(self.output_dir, self.image_folder)
+                    if self.image_folder
+                    else self.output_dir
+                )
+                os.makedirs(target_dir, exist_ok=True)
+                full_save_path = os.path.join(target_dir, new_filename)
 
                 req = urllib.request.Request(
                     src,
@@ -141,13 +162,20 @@ class _CustomMarkdownify(markdownify.MarkdownConverter):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
                     },
                 )
+                # Download with timeout to prevent indefinite blocking
                 with (
-                    urllib.request.urlopen(req) as response,
+                    urllib.request.urlopen(req, timeout=15) as response,
                     open(full_save_path, "wb") as out_file,
                 ):
                     out_file.write(response.read())
 
-                src = new_filename
+                # Build cross-platform relative path for Markdown link
+                if self.image_folder:
+                    src = os.path.join(self.image_folder, new_filename).replace(
+                        "\\", "/"
+                    )
+                else:
+                    src = new_filename
             except Exception as e:
                 warnings.warn(
                     f"Could not download image {src}: {e}",
